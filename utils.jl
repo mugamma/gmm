@@ -10,7 +10,7 @@ struct DirichletTrace <: Gen.Trace
     score::Float64
 end
 
-struct Dirichlet <: Gen.GenerativeFunction{Vector{Real}, DirichletTrace} end
+struct Dirichlet <: Gen.GenerativeFunction{Vector{Float64}, DirichletTrace} end
 dirichlet = Dirichlet()
 
 Gen.get_gen_fn(::DirichletTrace) = dirichlet
@@ -38,7 +38,7 @@ function Gen.generate(::Dirichlet, (param,)::Tuple{Vector{<:Real}},
     unconstrained_vals = rand(Distributions.Dirichlet(unconstrained_param))
     unconstrained_score = dirichlet_logpdf(unconstrained_param, unconstrained_vals)
     constrained_vals_sum = sum(Float64[constraints[i] for i=1:n if constrained_addrs[i]])
-    @assert constrained_vals_sum < 1
+    @assert constrained_vals_sum < 1 + 1e-12
     unconstrained_vals = (1 - constrained_vals_sum) .* unconstrained_vals
 
     sample = [constrained_addrs[i] ? constraints[i] : popfirst!(unconstrained_vals)
@@ -50,8 +50,9 @@ end
 Gen.simulate(d::Dirichlet, args::Tuple) = generate(d, args, choicemap())[1]
 
 function Gen.update(tr::DirichletTrace, args::Tuple{Vector{<:Real}},
-                    argdiffs::Tuple{NoChange}, constraints::ChoiceMap)
-    param, n = get_args(tr)..., length(get_retval(tr))
+                    argdiffs::Tuple{Union{NoChange, UnknownChange}},
+                    constraints::ChoiceMap)
+    old_param, new_param, n = get_args(tr)..., args..., length(get_retval(tr))
     old_sample = get_retval(tr)
     new_sample = copy(old_sample)
     discard, updated = choicemap(), Dict{Int, UnknownChange}()
@@ -61,8 +62,8 @@ function Gen.update(tr::DirichletTrace, args::Tuple{Vector{<:Real}},
         updated[idx] = UnknownChange()
     end
 
-    new_score = dirichlet_logpdf(param, new_sample)
-    new_tr = DirichletTrace(param, new_sample, new_score)
+    new_score = dirichlet_logpdf(new_param, new_sample)
+    new_tr = DirichletTrace(new_param, new_sample, new_score)
     weight = new_score - get_score(tr)
     retdiff = isempty(updated) ? NoChange() : VectorDiff(n, n, updated)
     new_tr, weight, retdiff, discard
