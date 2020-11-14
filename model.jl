@@ -1,15 +1,17 @@
 @gen function gmm(n)
-    k ~ poisson(λ)
+    k ~ positive_poisson(λ)
     w ~ dirichlet(δ * ones(k))
     means, vars = zeros(k), zeros(k)
     for j=1:k
         means[j] = ({:μ => j} ~ gaussian(ξ, 1/κ))
         vars[j] = ({:σ² => j} ~ inv_gamma(α, β))
     end
+    ys = zeros(n)
     for i=1:n
         z = ({:z => i} ~ categorical(w))
-        {:y => i} ~ gaussian(means[z], vars[z])
+        ys[i] = {:y => i} ~ gaussian(means[z], vars[z])
     end
+    ys
 end
 
 function make_constraints(ys, μs, σ²s, zs)

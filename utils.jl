@@ -48,4 +48,6 @@ Gen.has_argument_grads(::PointMass) = (false,)
 # Misc. #
 #########
 
+@dist positive_poisson(λ) = poisson(λ - 1) + 1
+
 mean(v) = sum(v) / length(v)
