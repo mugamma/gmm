@@ -7,9 +7,10 @@ function mcmc_kernel(tr)
     @assert acc "update_vars not gibbs"
     tr, acc = mh(tr, update_allocations, ())
     @assert acc "update_allocations not gibbs"
-    # split/merge
     tr
 end
+
+# variable names are chosen to match Richardson and Green 1997
 
 @gen function update_w(tr)
     n, k = get_args(tr)..., tr[:k]
@@ -50,6 +51,7 @@ end
     end
 end
 
+
 function initial_trace(ys, k, iters=3)
     # K-means for a small number of iterations
     n = length(ys)
@@ -62,6 +64,7 @@ function initial_trace(ys, k, iters=3)
         zs = map(y->argmin((y .- μs).^2), ys)
     end
     σ²s = map(j->mean((ys[zs .== j] .- μs[j]).^2), 1:k)
+    σ²s[σ²s .== 0.0] .= 1.0
     tr, = generate(gmm, (n,), make_constraints(ys, μs, σ²s, zs))
     tr
 end
