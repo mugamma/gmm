@@ -1,6 +1,8 @@
 using Gen
+import Distributions
 
 include("utils.jl")
+include("dirichlet.jl")
 
 # Hyperparamteres
 const λ = 3

@@ -1,5 +1,5 @@
 @gen function gmm(n)
-    k ~ point_mass(λ)
+    k ~ poisson(λ)
     w ~ dirichlet(δ * ones(k))
     means, vars = zeros(k), zeros(k)
     for j=1:k

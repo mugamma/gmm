@@ -1,7 +1,3 @@
-include("../gmm.jl")
-
-using Test
-
 @testset "correctly infers three component mixture" begin
     ys = [11.26, 28.93, 30.52, 30.09, 29.46, 10.03, 11.24, 11.55, 30.4, -18.44,
           10.91, 11.89, -20.64, 30.59, 14.84, 13.54, 7.25, 12.83, 11.86, 29.95,

@@ -1,3 +1,5 @@
+include("rjmcmc.jl")
+
 function mcmc_kernel(tr)
     tr, acc = mh(tr, update_w, ())
     @assert acc "update_w not gibbs"
@@ -7,6 +9,7 @@ function mcmc_kernel(tr)
     @assert acc "update_vars not gibbs"
     tr, acc = mh(tr, update_allocations, ())
     @assert acc "update_allocations not gibbs"
+    tr, = split_merge(tr)
     tr
 end
 
@@ -26,8 +29,10 @@ end
     for j=1:k
         y_js = [tr[:y => i] for i=1:n if tr[:z => i] == j]
         n_j, μ_j, σ²_j = length(y_js), tr[:μ => j], tr[:σ² => j]
-        {:μ => j} ~ gaussian((sum(y_js)/σ²_j + κ * ξ)/(n_j/σ²_j + κ),
-                             1/(n_j/σ²_j + κ))
+        if !isempty(y_js)
+            {:μ => j} ~ gaussian((sum(y_js)/σ²_j + κ * ξ)/(n_j/σ²_j + κ),
+                                 1/(n_j/σ²_j + κ))
+        end
     end
 end
 
@@ -36,7 +41,9 @@ end
     for j=1:k
         y_js = [tr[:y => i] for i=1:n if tr[:z => i] == j]
         n_j, μ_j, σ²_j = length(y_js), tr[:μ => j], tr[:σ² => j]
-        {:σ² => j} ~ inv_gamma(α + n_j/2, β + sum((y_js .- μ_j).^2)/2)
+        if !isempty(y_js)
+            {:σ² => j} ~ inv_gamma(α + n_j/2, β + sum((y_js .- μ_j).^2)/2)
+        end
     end
 end
 
@@ -51,6 +58,8 @@ end
     end
 end
 
+split_merge(tr) = mh(tr, split_merge_randomness, (), split_merge_involution;
+                    check=true)
 
 function initial_trace(ys, k, iters=3)
     # K-means for a small number of iterations
