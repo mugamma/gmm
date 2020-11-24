@@ -1,4 +1,30 @@
 using GenWorldModels: SetDict, item_to_indices
+using FunctionalCollections
+
+"""
+    get_obj_sampler(obj_to_weight)
+
+Returns a 0-ary function which samples an object
+according to the unnormalized weights, and returns the pair
+`(object, logprob)` where `logprob` is the log probability of
+having sampled this object.
+Calling is constructor function is `O(N)` in the number of objects.
+"""
+function get_obj_sampler(obj_to_weight)
+    pairvec = collect(obj_to_weight)
+    objvec = map(((x, _),) -> x, pairvec)
+    weightvec = map(((_, y),) -> y, pairvec)
+    total_weight = sum(weightvec)
+    weightvec /= total_weight
+
+    function sample_and_get_logprob()
+        i = categorical(weightvec)
+        obj = objvec[i]
+        logprob = log(weightvec[i])
+        return (obj, logprob)
+    end
+    return sample_and_get_logprob
+end
 
 # TODO: use some type of vector choicemap
 struct UnnormalizedCategoricalChoiceMap{ObjType} <: Gen.AddressTree{Value}
@@ -17,11 +43,20 @@ function Gen.get_subtrees_shallow(c::UnnormalizedCategoricalChoiceMap)
 end
 
 struct UnnormalizedCategoricalTrace{ObjType} <: Gen.Trace
-    args::Tuple{World, Int, AbstractDict{ObjType, Real}}
+    args::Tuple{World, Int, AbstractDict{ObjType, <:Real}}
     samples::PersistentVector{ObjType}
     total_weight::Float64
     obj_to_indices::SetDict
     score::Float64
+end
+function UnnormalizedCategoricalTrace(
+    args::Tuple{World, Int, AbstractDict{ObjType, <:Real}},
+    samples::PersistentVector{ObjType},
+    total_weight::Real,
+    obj_to_indices::SetDict,
+    score::Float64 
+) where {ObjType}
+    UnnormalizedCategoricalTrace{ObjType}(args, samples, Float64(total_weight), obj_to_indices, score)
 end
 Gen.get_gen_fn(::UnnormalizedCategoricalTrace) = unnormalized_categorical
 Gen.get_args(tr::UnnormalizedCategoricalTrace) = tr.args
@@ -46,32 +81,28 @@ unnormalized_categorical = UnnormalizedCategorical()
 
 function Gen.generate(
     ::UnnormalizedCategorical,
-    args::Tuple{World, Int, AbstractDict{ObjType, Real}},
+    args::Tuple{World, Integer, AbstractDict{ObjType, <:Real}},
     constraints::ChoiceMap
 ) where {ObjType}
     (world, num_samples, obj_to_weight) = args
     logprob_of_sampled = 0.
     total_logprob = 0.
 
-    pairvec = collect(obj_to_weight)
-    objvec = map((x, _) -> x, pairvec)
-    weightvec = map((_, y) -> y, pairvec)
-    total_weight = sum(weightvec)
-    weightvec /= total_weight
+    obj_sampler = get_obj_sampler(obj_to_weight)
+    total_weight = sum(values(obj_to_weight))
     samples = PersistentVector{ObjType}()
     for i=1:num_samples
         constraint = get_subtree(constraints, i)
         if isempty(constraint)
-            i = categorical(weightvec)
-            samples = push(samples, objvec[i])
-            logprob = log(weightvec[i])
+            (obj, logprob) = obj_sampler()
+            samples = push(samples, obj)
             logprob_of_sampled += logprob
             total_logprob += logprob
         else
             @assert has_value(constraint) "Constraint at index $i was a tree $constraint, not a value."
             obj = get_value(constraint)
             samples = push(samples, obj)
-            total_logprob += log(obj_to_weight[obj]/totalweight)
+            total_logprob += log(obj_to_weight[obj]/total_weight)
         end
     end
 
@@ -82,14 +113,14 @@ end
 function Gen.update(
     tr::UnnormalizedCategoricalTrace,
     args::Tuple,
-    (_, num_sample_diff, obj_to_weight_diff)::Tuple{GenWorldModels.WorldUpdateDiff, Diff, Union{NoChange, <:DictDiff}},
+    (_, num_sample_diff, obj_to_weight_diff)::Tuple{Union{NoChange, <:GenWorldModels.WorldUpdateDiff}, Diff, Union{NoChange, <:DictDiff}},
     updatespec::UpdateSpec,
-    _::Selection
+    eca::Selection
 )
     (_, num_samples, obj_to_weight) = args
     num_changed = num_sample_diff === NoChange() ? false : get_args(tr)[1] == args[1]
     if obj_to_weight_diff === NoChange()
-        obj_to_weight_diff = DictDiff(Dict(), Set(), Dict())
+        obj_to_weight_diff = DictDiff(Dict(), Set(), Dict{Any, Diff}())
     end
 
     # we need to handle:
@@ -105,7 +136,7 @@ function Gen.update(
     for obj in obj_to_weight_diff.deleted
         total_weight -= get_args(tr)[3][obj]
     end
-    for (obj, diff) in obj_to_new_weight_diff.updated
+    for (obj, diff) in obj_to_weight_diff.updated
         if diff !== NoChange()
             total_weight -= get_args(tr)[3][obj]
             total_weight += obj_to_weight[obj]
@@ -114,12 +145,12 @@ function Gen.update(
 
     # update the samples
     objsampler = nothing
-    updated = Dict{Int, <:Diff}()
+    updated = Dict{Int, Diff}()
     discard = choicemap()
     samples = tr.samples
     obj_to_indices = tr.obj_to_indices
     total_logprob = get_score(tr)
-    total_logprob_of_chocies = 0.
+    log_q_ratio = 0. # log(q(tr -> new_tr unconstrained choices) / q(new_tr -> tr unconstrained choices))
     num_handled_for_obj = Dict() # TODO: accumulate in this dictionary as we go!
     total_num_handled = 0 # TODO: accumulate this
     for (i, subtree) in get_subtrees_shallow(updatespec)
@@ -137,32 +168,35 @@ function Gen.update(
                 objsampler = get_obj_sampler(obj_to_weight)
             end
             (obj, logprob) = objsampler()
-            total_logprob_of_choices += logprob
+            log_q_ratio += logprob
             total_logprob += logprob
         else
             error("Unrecognized UpdateSpec at index $i: $subtree")
         end
-        diff[i] = UnknownChange()
+        updated[i] = UnknownChange()
         discard[i] = tr.samples[i]
-        total_logprob -= get_args(tr)[3][tr.samples[i]] / tr.total_weight
+        total_logprob -= log(get_args(tr)[3][tr.samples[i]] / tr.total_weight)
         obj_to_indices = dissoc(obj_to_indices, tr.samples[i], i)
         obj_to_indices = assoc(obj_to_indices, obj, i)
         samples = assoc(samples, i, obj)
         num_handled_for_obj[obj] = get(num_handled_for_obj, obj, 0) + 1
         total_num_handled += 1
+        if isempty(get_subtree(eca, i))
+            log_q_ratio -= log(get_args(tr)[3][tr.samples[i]] / tr.total_weight)
+        end
     end
 
     # handle additions/deletions
     if num_changed
-        for i=num_samples:-1:get_args(tr)[2]
+        for i=get_args(tr)[2]:-1:(num_samples+1)
             # delete these samples
             obj = samples[i]
             samples = pop(samples)
-            total_logprob -= get_args(tr)[3][tr.samples[i]] / tr.total_weight
+            total_logprob -= log(get_args(tr)[3][tr.samples[i]] / tr.total_weight)
             obj_to_indices = dissoc(obj_to_indices, tr.samples[i], i)
             discard[i] = tr.samples[i]
         end
-        for i=num_samples:get_args(tr)[2]
+        for i=(get_args(tr)[2]+1):num_samples
             # generate these samples
             spec = get_subtree(updatespec, i)
             if spec isa Value
@@ -174,7 +208,7 @@ function Gen.update(
                     objsampler = get_obj_sampler(obj_to_weight)
                 end
                 (obj, logprob) = objsampler()
-                total_logprob_of_choices += logprob
+                log_q_ratio += logprob
                 total_logprob += logprob    
             else
                 error("Unrecognized UpdateSpec at index $i: $spec")
@@ -187,19 +221,19 @@ function Gen.update(
     end
 
     # handle weight changes
-    log_total_ratio = log(total_weight) - log(tr.total_weight)
-    for (obj, diff) in obj_to_new_weight_diff.updated
+    for (obj, diff) in obj_to_weight_diff.updated
         if diff !== NoChange()
             log_weight_change = log(obj_to_weight[obj]) - log(get_args(tr)[3][obj])
-            num_unhandled_occurances = length(obj_to_indices[obj]) - num_handled_for_obj[obj]
+            num_unhandled_occurances = length(obj_to_indices[obj]) - get(num_handled_for_obj, obj, 0)
             total_logprob += num_unhandled_occurances * log_weight_change
         end
     end
-    total_logprob += (num_samples - total_num_handled) * (-total_log_ratio)
+    log_total_ratio = log(total_weight) - log(tr.total_weight)
+    total_logprob += (num_samples - total_num_handled) * (-log_total_ratio)
 
     new_tr = UnnormalizedCategoricalTrace(args, samples, total_weight, obj_to_indices, total_logprob)
-    diff = VectorDiff(length(tr.samples), num_samples, updated)
-    weight = total_logprob - total_logprob_of_choices
+    diff = VectorDiff(num_samples, length(tr.samples), updated)
+    weight = total_logprob - get_score(tr) - log_q_ratio
     
     return (new_tr, weight, diff, discard)
 end
