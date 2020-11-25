@@ -43,14 +43,14 @@ function Gen.get_subtrees_shallow(c::UnnormalizedCategoricalChoiceMap)
 end
 
 struct UnnormalizedCategoricalTrace{ObjType} <: Gen.Trace
-    args::Tuple{World, Int, AbstractDict{ObjType, <:Real}}
+    args::Tuple{World, Int, AbstractDict{ObjType, <:Any}}
     samples::PersistentVector{ObjType}
     total_weight::Float64
     obj_to_indices::SetDict
     score::Float64
 end
 function UnnormalizedCategoricalTrace(
-    args::Tuple{World, Int, AbstractDict{ObjType, <:Real}},
+    args::Tuple{World, Int, AbstractDict{ObjType, <:Any}},
     samples::PersistentVector{ObjType},
     total_weight::Real,
     obj_to_indices::SetDict,
@@ -62,7 +62,7 @@ Gen.get_gen_fn(::UnnormalizedCategoricalTrace) = unnormalized_categorical
 Gen.get_args(tr::UnnormalizedCategoricalTrace) = tr.args
 Gen.get_retval(tr::UnnormalizedCategoricalTrace) = tr.samples
 Gen.get_score(tr::UnnormalizedCategoricalTrace) = tr.score
-Gen.get_choices(tr::UnnormalizedCategoricalTrace) = UnnormalizedCategoricalChoiceMap(tr.samples)
+Gen.get_choices(tr::UnnormalizedCategoricalTrace) = values_to_concrete(tr.args[1], UnnormalizedCategoricalChoiceMap(tr.samples))
 Gen.project(::UnnormalizedCategoricalTrace, ::EmptyAddressTree) = 0.
 
 struct UnnormalizedCategorical <: Gen.GenerativeFunction{
@@ -81,10 +81,11 @@ unnormalized_categorical = UnnormalizedCategorical()
 
 function Gen.generate(
     ::UnnormalizedCategorical,
-    args::Tuple{World, Integer, AbstractDict{ObjType, <:Real}},
+    args::Tuple{World, Integer, AbstractDict{ObjType, <:Any}},
     constraints::ChoiceMap
 ) where {ObjType}
     (world, num_samples, obj_to_weight) = args
+    constraints = values_to_abstract(world, constraints)
     logprob_of_sampled = 0.
     total_logprob = 0.
 
@@ -117,8 +118,10 @@ function Gen.update(
     updatespec::UpdateSpec,
     eca::Selection
 )
-    (_, num_samples, obj_to_weight) = args
-    num_changed = num_sample_diff === NoChange() ? false : get_args(tr)[1] == args[1]
+    (world, num_samples, obj_to_weight) = args
+    updatespec = values_to_abstract(world, updatespec)
+
+    num_changed = num_sample_diff !== NoChange()
     if obj_to_weight_diff === NoChange()
         obj_to_weight_diff = DictDiff(Dict(), Set(), Dict{Any, Diff}())
     end
@@ -235,5 +238,5 @@ function Gen.update(
     diff = VectorDiff(num_samples, length(tr.samples), updated)
     weight = total_logprob - get_score(tr) - log_q_ratio
     
-    return (new_tr, weight, diff, discard)
+    return (new_tr, weight, diff, values_to_concrete(world, discard))
 end

@@ -3,6 +3,9 @@ module TestUnnormalizedCategorical
 using Test
 using Gen
 using GenWorldModels
+using Distributions
+using Profile
+include("../../dirichlet.jl")
 
 include("../../unnormalized_categorical/unnormalized_categorical.jl")
 
@@ -36,7 +39,7 @@ include("../../unnormalized_categorical/unnormalized_categorical.jl")
 
         # update with a regeneration in output
         (new_tr, weight, retdiff, discard) = update(tr, (world, num_samples, obj_to_weight), (NoChange(), NoChange(), NoChange()), select(1), EmptySelection())
-        @test weight == 0.
+        @test isapprox(weight, 0.; atol=10e-10)
         @test discard == choicemap((1, 1))
         @test retdiff isa VectorDiff
         @test retdiff.prev_length == retdiff.new_length
@@ -126,7 +129,115 @@ include("../../unnormalized_categorical/unnormalized_categorical.jl")
     end
 end
 
-# @gen function dirichlet_categorical(prior, num_samples)
-#     probs ~ dirichlet(prior)
+# model equivalent to:
+# @type Cluster
+# @oupm dirichlet_cat(alpha) begin
+#     @number Cluster() ~ poisson(10)
+#     @property weight(::Cluster) ~ gamma(@arg alpha, 1)
+#     @observation_model (static, diffs) function get_clusters(num_samples)
+#         cluster_to_weight = @map (@get(weight[c]) for c in @objects(Cluster))
+#         samples ~ unnormalized_categorical(@world, num_samples, cluster_to_weight)
+#         indices = @map [@index(c) for c in samples]
+#         return indices
+#     end
+# end
+@type Cluster
+α = 0.9
+@dist weight(::Cluster, ::World) = gamma(α, 1)
+@dist num_cluster(::Tuple{}, ::World) = poisson(5)
+@gen (static, diffs) function root(world, num_samples)
+    clusters ~ get_sibling_set(:Cluster, :num_cluster, world, ())
+    cluster_to_cluster = lazy_set_to_dict_map(identity, clusters)
+    cluster_to_weight ~ dictmap_lookup_or_generate(world[:weight], cluster_to_cluster)
+    samples ~ unnormalized_categorical(world, num_samples, cluster_to_weight)
+    indices ~ map_lookup_or_generate(world[:index], samples)
+    return indices
+end
+@load_generated_functions()
+dc_world = UsingWorld(root, :weight => weight, :num_cluster => num_cluster)
+
+# @gen function dc_vanilla(num_samples)
+#     n ~ poisson(5)
+#     probs ~ dirichlet([α for _=1:n])
+#     samples ~ Map(categorical)(fill(probs, num_samples))
+#     return samples
+# end
+@gen function un_dc_vanilla(num_samples)
+    n ~ poisson(5)
+    un_probs = []
+    for i=1:n
+        push!(un_probs, {:weight => i} ~ gamma(α, 1))
+    end
+    probs = un_probs/sum(un_probs)
+    samples ~ Map(categorical)(fill(probs, num_samples))
+    return samples
+end
+
+@testset "unnormalized categorical to emulate dirichlet->categorical" begin
+    tr, weight = generate(dc_world, (10,))
+    @test isapprox(weight, 0., atol=10e-10)
+
+    num_clusters = tr[:world => :num_cluster => ()]
+    ch = choicemap(
+        (:n, num_clusters),
+        (
+            (:weight => i, tr[:world => :weight => Cluster(i)]) for i=1:num_clusters
+        )...
+    )
+    for i=1:10
+        ch[:samples => i] = get_retval(tr)[i]
+    end
+    van_tr, _ = generate(un_dc_vanilla, (10,), ch)
+
+    @test isapprox(get_score(tr), get_score(van_tr))
+
+    for _=1:10
+        new_len = uniform_discrete(6, 15)
+        new_num_clusters = uniform_discrete(max(1, num_clusters - 1), num_clusters + 2)
+        wch = choicemap(
+            (:world => :num_cluster => (), new_num_clusters)
+        )
+        ch = choicemap((:n, new_num_clusters))
+        for i=1:min(num_clusters, new_num_clusters)
+            if bernoulli(0.3)
+                wch[:world => :weight => Cluster(i)] = gamma(α, 1)
+                ch[:weight => i] = wch[:world => :weight => Cluster(i)]
+            end
+        end
+        for i=num_clusters:new_num_clusters
+            wch[:world => :weight => Cluster(i)] = gamma(α, 1)
+            ch[:weight => i] = wch[:world => :weight => Cluster(i)]
+        end
+        for i=1:new_len
+            if  i > 10 || get_retval(tr)[i] > new_num_clusters
+                idx = uniform_discrete(1, new_num_clusters)
+                wch[:kernel => :samples => i] = Cluster(idx)
+                ch[:samples => i] = idx
+            end
+        end
+        new_tr, weight, retdiff, discard = update(tr, (new_len,), (UnknownChange(),), wch)
+        new_vtr, vweight, vretdiff, vdiscard = update(van_tr, (new_len,), (UnknownChange(),), ch)
+        
+        @test get_retval(new_tr) == get_retval(new_vtr)
+        @test isapprox(weight, vweight)
+        @test isapprox(get_score(new_tr), get_score(new_vtr))
+    end
+end
+
+# in progress performance testing:
+# Profile.clear()
+# generate(dc_world, (1000,), choicemap((:world => :num_cluster => (), 10)))
+# # @profile generate(dc_world, (1000,), choicemap((:world => :num_cluster => (), 100)))
+# stats = @timed generate(dc_world, (10000,), choicemap((:world => :num_cluster => (), 30)))
+# println("generate_time: $(stats.time)")
+# tr = stats.value[1]
+# for _=1:5
+#     #stats = @timed 
+#     @profile update(tr, (10001,), (UnknownChange(),), choicemap(
+#         (:world => :weight => Cluster(1), 2.)
+#     ), AllSelection())
+#     # println("update time: $(stats.time)")
+# end
+# Profile.print(mincount=100)
 
 end
