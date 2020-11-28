@@ -129,18 +129,18 @@ include("../../unnormalized_categorical/unnormalized_categorical.jl")
     end
 end
 
-# model equivalent to:
-# @type Cluster
-# @oupm dirichlet_cat(alpha) begin
-#     @number Cluster() ~ poisson(10)
-#     @property weight(::Cluster) ~ gamma(@arg alpha, 1)
-#     @observation_model (static, diffs) function get_clusters(num_samples)
-#         cluster_to_weight = @map (@get(weight[c]) for c in @objects(Cluster))
-#         samples ~ unnormalized_categorical(@world, num_samples, cluster_to_weight)
-#         indices = @map [@index(c) for c in samples]
-#         return indices
-#     end
-# end
+# # model equivalent to:
+# # @type Cluster
+# # @oupm dirichlet_cat(alpha) begin
+# #     @number Cluster() ~ poisson(10)
+# #     @property weight(::Cluster) ~ gamma(@arg alpha, 1)
+# #     @observation_model (static, diffs) function get_clusters(num_samples)
+# #         cluster_to_weight = @map (@get(weight[c]) for c in @objects(Cluster))
+# #         samples ~ unnormalized_categorical(@world, num_samples, cluster_to_weight)
+# #         indices = @map [@index(c) for c in samples]
+# #         return indices
+# #     end
+# # end
 @type Cluster
 α = 0.9
 @dist weight(::Cluster, ::World) = gamma(α, 1)
@@ -224,20 +224,18 @@ end
     end
 end
 
-# in progress performance testing:
-# Profile.clear()
+# performance testing:
 # generate(dc_world, (1000,), choicemap((:world => :num_cluster => (), 10)))
-# # @profile generate(dc_world, (1000,), choicemap((:world => :num_cluster => (), 100)))
-# stats = @timed generate(dc_world, (10000,), choicemap((:world => :num_cluster => (), 30)))
+# stats = @timed generate(dc_world, (100000,), choicemap((:world => :num_cluster => (), 300)))
 # println("generate_time: $(stats.time)")
 # tr = stats.value[1]
 # for _=1:5
-#     #stats = @timed 
-#     @profile update(tr, (10001,), (UnknownChange(),), choicemap(
+#     #stats = @timed
+#     println("before update!")
+#     stats = @timed update(tr, (100001,), (UnknownChange(),), choicemap(
 #         (:world => :weight => Cluster(1), 2.)
 #     ), AllSelection())
-#     # println("update time: $(stats.time)")
+#     println("update time: $(stats.time)")
 # end
-# Profile.print(mincount=100)
 
 end
