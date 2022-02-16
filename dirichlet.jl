@@ -33,7 +33,8 @@ function Gen.generate(::Dirichlet, (param,)::Tuple{Vector{<:Real}},
     n = length(param)
     constrained_addrs = [has_value(constraints, i) for i=1:n]
     unconstrained_param = param[.!constrained_addrs]
-    unconstrained_vals = rand(Distributions.Dirichlet(unconstrained_param))
+    unconstrained_vals = isempty(unconstrained_param) ? Int64[] :
+                         rand(Distributions.Dirichlet(unconstrained_param))
     unconstrained_score = isempty(unconstrained_vals) ? 0 :
                           dirichlet_logpdf(unconstrained_param, unconstrained_vals)
     constrained_vals_sum = sum(Float64[constraints[i] for i=1:n if constrained_addrs[i]])
